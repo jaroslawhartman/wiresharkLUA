@@ -105,28 +105,30 @@ function max(numlist)
     return number
 end
 
-function histogram(numlist)
+function histogram(numlist, unitName, factor, minimum)
     local histo = {}
     local maximum = max(numlist)
-    local factor = 1024*1024
     
-    local stepSize = maximum / histogramSteps
+    local stepSize = (maximum-minimum) / histogramSteps
     
     for i = 1, histogramSteps do
         histo[i] = 0
     end
     
-    
     for index, value in ipairs(numlist) do
-        local step = math.ceil(value / stepSize)
-        histo[step] = histo[step] + 1 or 0
+        if(value >= minimum)
+        then
+            local step = math.ceil((value-minimum)  / stepSize)
+            histo[step] = histo[step] + 1 or 0
+        else
+            histo[1] = histo[1] + 1 or 0
+        end
     end
-    
-    message("Histogram of USU (Validity-Time)")
     
     local currentStep = 0
     for index, value in ipairs(histo) do
-        message(string.format("%2d: %9d MB - %9d MB : %6d (%3.2f %%)", index, currentStep/factor, (currentStep + stepSize+1)/factor, value , value/(#numlist)*100))
+        message(string.format("%2d: %9.2f %s - %9.2f %s : %6d (%3.2f %%)", index, currentStep/factor + (index == 1 and 0 or minimum), unitName, (currentStep + stepSize)/factor+minimum, unitName, value , value/(#numlist)*100))
+        -- message(string.format("%2d: %9.2f %s - %9.2f %s : %6d (%3.2f %%)", index, (currentStep/factor) +  minimum, unitName, (currentStep + stepSize)/factor+minimum, unitName, value , value/(#numlist)*100))
         currentStep = currentStep + stepSize
     end        
 end
@@ -148,7 +150,7 @@ local function statistics_win()
     win:set_atclose(remove)
 end
 
-local function report(reportingReasons, totalOctets, total)
+local function reportRR(reportingReasons, totalOctets, total)
     for k, v in pairs(reportingReasons) do
         local percentage = string.format("%.3f", (tostring(v)/total*100))
         message(string.format("%-30s", k) .. " - " .. tostring(v) .. ' \t\t(' .. percentage .. ' %)')
@@ -158,20 +160,42 @@ local function report(reportingReasons, totalOctets, total)
     
     message('')
     message("USU (octets) when VALIDITY_TIME (4)")
-
+    
     local median  = median(totalOctets)
     local average =  average(totalOctets)
     local min = min(totalOctets)
     local max = max(totalOctets)
-
+    
     message(string.format("Median  : %d octets, %.2f kB", median, median / 1024))
     message(string.format("Average : %d octets, %.2f kB", average, average / 1024))
     message(string.format("Min     : %d octets", min))
     message(string.format("Max     : %d octets, %.2f kB", max, max / 1024))
     
     message('')
+    
+    message("Histogram of USU (Validity-Time)")
+    histogram(totalOctets, 'MB', 1024*1024, 0)
+end
 
-    histogram(totalOctets)
+
+local function reportVTtimeGap(rrVTtimeGap)
+    message('')
+    message("Time Gap")
+    
+    local median  = median(rrVTtimeGap)
+    local average =  average(rrVTtimeGap)
+    local min = min(rrVTtimeGap)
+    local max = max(rrVTtimeGap)
+    
+    message(string.format("Median  : %.2f seconds", median))
+    message(string.format("Average : %.2f seconds", average))
+    message(string.format("Min     : %.2f seconds", min))
+    message(string.format("Max     : %.2f seconds", max))
+    
+
+    message('')
+    message("Histogram of time gap between CCA-U and CCR-U")
+    histogram(rrVTtimeGap, 'sec', 1, 3599)
 end
 
 
@@ -182,8 +206,11 @@ end
 ------------------------------------
 
 do
-    local rrField = Field.new("diameter.3GPP-Reporting-Reason")
-    local toField = Field.new("diameter.CC-Total-Octets")
+    local sidField = Field.new("diameter.Session-Id")
+    local reqField = Field.new("diameter.flags.request")
+    local diameterField = Field.new("diameter")
+    local rrField  = Field.new("diameter.3GPP-Reporting-Reason")
+    local toField  = Field.new("diameter.CC-Total-Octets")
     local total = 0
 
     local function init_listener()
@@ -192,44 +219,90 @@ do
         local totalOctets = {}
         local filter = 'diameter.3GPP-Reporting-Reason'
 
+        local sessions = {}
+        local rrVTtimeGap = {}
+
         if gui_enabled() then
             statistics_win()
         end
         
         message("Registering Listener")
-        tap = Listener.new("diameter", filter)
+        tap = Listener.new("frame", "", true)
         
         -- this function will be called once for each packet
         function tap.packet(pinfo, tvb, tapdata)
             
-            local rrFields = {rrField()}
-            local toFields = {toField()}
-            
-            -- print(string.format("Loop begins for #rrFields: %d, #toFields %d", #rrFields, #toFields))
-            
-            for index, _ in pairs(rrFields) do 
-                local to = 0
-                
-                -- Retrieve Reporting Reason and corresponing Total-Octets
-                -- Note, this may *not* always work
-                
-                local rr = rrFields[index].display
-                
-                if index <= #toFields then
-                    to = toFields[index].display
+            local rrFields  = {rrField()}
+            local toFields  = {toField()}
+            local sidFields = {sidField()}
+            local reqFields = {reqField()}
+            local diameterFields = {diameterField()}
+
+
+            -- print(diameterFields)
+
+            -- print("Sessions # " .. #sessions)
+
+            -- Skip if no diameter.flag.request --> no Diameter frame
+            if(reqFields[1] ~= nil)
+            then
+                -- print(string.format("Frame #: %d Request: %s", pinfo.number, reqFields[1].value))
+                for index, _ in pairs(sidFields) do
+                    local sid = tostring(sidFields[index])
+                    if(reqFields[1].value)
+                    then
+                        -- Diamater Request 
+                        -- print("Request:")
+                        for index, _ in pairs(rrFields) do 
+                            if(rrFields[index].display == 'VALIDITY_TIME (4)')
+                            then
+                                -- print(string.format(" Found RR=VT session[%s] = %s", sid, sessions[sid] ))
+                                if(sessions[sid] ~= nil)
+                                then
+                                    -- Time gap between CCA-U and CCR-U (with RR-VT) 
+                                    local timeGap = pinfo.abs_ts-sessions[sid]
+                                    if( timeGap > 0)
+                                    then
+                                        -- print(string.format(" Frame # %s, sid %s on the list with ts %s. Delta %s", pinfo.number, sid, sessions[sid], timeGap ))
+                                        table.insert(rrVTtimeGap, timeGap)
+                                    end
+                                end
+                            end
+                        end
+                    else
+                        -- Diamater Response
+                        sessions[sid] = pinfo.abs_ts
+                        -- print(string.format("Response. Frame # %s . Stored session[%s] = %s", pinfo.number, sid, sessions[sid] ))
+                    end 
+                    -- print(string.format("    sid : %s",  sidFields[index]))
                 end
                 
-                -- print(string.format("    %s - %s - %s (octets)", index, rr, to))
+                -- print(string.format("Loop begins for #rrFields: %d, #toFields %d", #rrFields, #toFields))
                 
-                reportingReasons[rr] = (reportingReasons[rr] or 0 ) + 1
+                for index, _ in pairs(rrFields) do 
+                    local to = 0
                 
-                if rr == 'VALIDITY_TIME (4)' and to ~= nil then
-                    -- print(string.format("%d - %d", pinfo.number, to))
-                    -- print("RR:" .. rr)
-                    table.insert(totalOctets, tonumber(to))
+                    -- Retrieve Reporting Reason and corresponing Total-Octets
+                    -- Note, this may *not* always work
+                
+                    local rr = rrFields[index].display
+                
+                    if index <= #toFields then
+                        to = toFields[index].display
+                    end
+                
+                    -- print(string.format("    %s - %s - %s (octets)", index, rr, to))
+                
+                    reportingReasons[rr] = (reportingReasons[rr] or 0 ) + 1
+                
+                    if rr == 'VALIDITY_TIME (4)' and to ~= nil then
+                        -- print(string.format("%d - %d", pinfo.number, to))
+                        -- print("RR:" .. rr)
+                        table.insert(totalOctets, tonumber(to))
+                    end
+                
+                    total = total + 1
                 end
-                
-                total = total + 1
             end
         end
         
@@ -237,8 +310,10 @@ do
             if gui_enabled() then
                 win:clear()
                 if total > 0 then
-                    report(reportingReasons, totalOctets, total)
+                    reportRR(reportingReasons, totalOctets, total)
                 end
+
+                reportVTtimeGap(rrVTtimeGap)
             end
         end
         
@@ -249,10 +324,12 @@ do
                 win:clear()
             end
             
-            report(reportingReasons, totalOctets, total)
+            reportRR(reportingReasons, totalOctets, total)
+            reportVTtimeGap(rrVTtimeGap)
 
             reportingReasons = {}
             totalOctets = {}
+            rrVTtimeGap = {}
             total = 0
         end
         
