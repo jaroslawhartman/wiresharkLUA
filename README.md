@@ -73,12 +73,7 @@ Histogram of USU (Validity-Time)
 23:       260 MB -       272 MB :      9 (0.25 %)
 24:       272 MB -       284 MB :      8 (0.22 %)
 25:       284 MB -       296 MB :      5 (0.14 %)
-QUOTA_EXHAUSTED (3)            - 359 		(7.701 %)
-FINAL (2)                      - 402 		(8.623 %)
-VALIDITY_TIME (4)              - 3634 		(77.949 %)
-QHT (1)                        - 267 		(5.727 %)
 
-Total                          - 4662 		(100 %)
 ```
 
 **Note** If you can see two invocations of LUA plugin, see the note in *Wireshark GUI* section:
