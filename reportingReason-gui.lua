@@ -1,4 +1,3 @@
-
 -- Generates percentage statistics of 3GPP-Reporting-Reason,  for example
 --
 -- FINAL (2) - 381 (8.2129769346842 %)
@@ -138,7 +137,7 @@ end
 
 local function statistics_win()
     -- Declare the window we will use
-    win = TextWindow.new("Diameter 3GPP-Reporting-Reason")
+    win = TextWindow.new("Diameter Statistics")
     
     local function remove()
         -- this way we remove the listener that otherwise will remain running indefinitely
@@ -149,6 +148,16 @@ local function statistics_win()
 end
 
 local function report(reportingReasons, totalOctets, total)
+
+    if (totalOctets == nil) then
+        message('')
+        message('--------------------------------------')
+        message("Result Codes:")
+    else
+        message('--------------------------------------')
+        message("Reporting Reasons:")
+    end
+
     for k, v in pairs(reportingReasons) do
         local percentage = string.format("%.3f", (tostring(v)/total*100))
         message(string.format("%-30s", k) .. " - " .. tostring(v) .. ' \t\t(' .. percentage .. ' %)')
@@ -157,21 +166,24 @@ local function report(reportingReasons, totalOctets, total)
     message(string.format("%-30s", 'Total') .. " - " .. tostring(total) .. ' \t\t(' .. 100 .. ' %)')
     
     message('')
-    message("USU (octets) when VALIDITY_TIME (4)")
-
-    local median  = median(totalOctets)
-    local average =  average(totalOctets)
-    local min = min(totalOctets)
-    local max = max(totalOctets)
-
-    message(string.format("Median  : %d octets, %.2f kB", median, median / 1024))
-    message(string.format("Average : %d octets, %.2f kB", average, average / 1024))
-    message(string.format("Min     : %d octets", min))
-    message(string.format("Max     : %d octets, %.2f kB", max, max / 1024))
     
-    message('')
+    if not (totalOctets == nil) then
+        message("USU (octets) when VALIDITY_TIME (4)")
 
-    histogram(totalOctets)
+        local median  = median(totalOctets)
+        local average =  average(totalOctets)
+        local min = min(totalOctets)
+        local max = max(totalOctets)
+    
+        message(string.format("Median  : %d octets, %.2f kB", median, median / 1024))
+        message(string.format("Average : %d octets, %.2f kB", average, average / 1024))
+        message(string.format("Min     : %d octets", min))
+        message(string.format("Max     : %d octets, %.2f kB", max, max / 1024))
+    end
+    
+    
+
+    -- histogram(totalOctets)
 end
 
 
@@ -184,11 +196,14 @@ end
 do
     local rrField = Field.new("diameter.3GPP-Reporting-Reason")
     local toField = Field.new("diameter.CC-Total-Octets")
+    local rcField = Field.new("diameter.Result-Code")
     local total = 0
+    local totalRC = 0
 
     local function init_listener()
         -- Hash of reportingReasons
         local reportingReasons = {}
+        local resultCodes = {}
         local totalOctets = {}
         local filter = 'diameter.3GPP-Reporting-Reason'
 
@@ -197,7 +212,7 @@ do
         end
         
         message("Registering Listener")
-        tap = Listener.new("diameter", filter)
+        tap = Listener.new("diameter")
         
         -- this function will be called once for each packet
         function tap.packet(pinfo, tvb, tapdata)
@@ -233,11 +248,43 @@ do
             end
         end
         
+        
+--------------------------------------
+
+        local filterRC = 'diameter.Result-Code'
+        
+        tap = Listener.new("diameter", filterRC)
+        
+        -- this function will be called once for each packet
+        function tap.packet(pinfo, tvb, tapdata)
+            
+            local rcFields = {rcField()}
+            
+            for indexRC, _ in pairs(rcFields) do 
+                local to = 0
+                
+                local rc = rcFields[indexRC].display
+                
+                if indexRC <= #rcFields then
+                    to = rcFields[indexRC].display
+                end
+                
+                resultCodes[rc] = (resultCodes[rc] or 0 ) + 1
+                
+                totalRC = totalRC + 1
+            end
+        end
+
+-----------------------------        
+        
+        
+        
         function tap.draw(t)
             if gui_enabled() then
                 win:clear()
                 if total > 0 then
                     report(reportingReasons, totalOctets, total)
+                    report(resultCodes, nil, totalRC)
                 end
             end
         end
@@ -250,6 +297,7 @@ do
             end
             
             report(reportingReasons, totalOctets, total)
+            report(resultCodes, nil, totalRC)
 
             reportingReasons = {}
             totalOctets = {}
@@ -263,7 +311,7 @@ do
 
     if gui_enabled() == true then
         -- Starting in GUI mode
-        register_menu("Statistics/Diameter Reporting Reason", init_listener, MENU_TOOLS_UNSORTED)
+        register_menu("Statistics/Diameter Statistics", init_listener, MENU_TOOLS_UNSORTED)
         -- Call the init function to get things started.
     else
         message("Starting in command-line mode")
@@ -271,4 +319,3 @@ do
         init_listener()
     end
 end
-
